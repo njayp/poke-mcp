@@ -1,225 +1,229 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
+import { createServer } from "http";
+import { exec } from "child_process";
 
-const NWS_API_BASE = "https://api.weather.gov";
-const USER_AGENT = "weather-app/1.0";
+const POKEAPI_BASE = "https://pokeapi.co/api/v2";
 
-// Helper function for making NWS API requests
-async function makeNWSRequest<T>(url: string): Promise<T | null> {
-  const headers = {
-    "User-Agent": USER_AGENT,
-    Accept: "application/geo+json",
+// Store the current Pokemon data and server info
+let currentPokemon: PokemonData | null = null;
+let actualPort: number | null = null;
+
+interface PokemonType {
+  slot: number;
+  type: {
+    name: string;
+    url: string;
   };
+}
 
+interface PokemonData {
+  id: number;
+  name: string;
+  types: PokemonType[];
+  height: number;
+  weight: number;
+}
+
+// Helper function for making PokeAPI requests
+async function fetchPokemon(idOrName: string | number): Promise<PokemonData | null> {
   try {
-    const response = await fetch(url, { headers });
+    const response = await fetch(`${POKEAPI_BASE}/pokemon/${idOrName}`);
     if (!response.ok) {
       throw new Error(`HTTP error! status: ${response.status}`);
     }
-    return (await response.json()) as T;
+    const data = await response.json();
+    return {
+      id: data.id,
+      name: data.name,
+      types: data.types,
+      height: data.height,
+      weight: data.weight,
+    };
   } catch (error) {
-    console.error("Error making NWS request:", error);
+    console.error("Error fetching Pokemon:", error);
     return null;
   }
 }
 
-interface AlertFeature {
-  properties: {
-    event?: string;
-    areaDesc?: string;
-    severity?: string;
-    status?: string;
-    headline?: string;
-  };
+// Format Pokemon types as a readable string
+function formatTypes(types: PokemonType[]): string {
+  return types
+    .sort((a, b) => a.slot - b.slot)
+    .map(t => t.type.name)
+    .join(", ");
 }
 
-// Format alert data
-function formatAlert(feature: AlertFeature): string {
-  const props = feature.properties;
-  return [
-    `Event: ${props.event || "Unknown"}`,
-    `Area: ${props.areaDesc || "Unknown"}`,
-    `Severity: ${props.severity || "Unknown"}`,
-    `Status: ${props.status || "Unknown"}`,
-    `Headline: ${props.headline || "No headline"}`,
-    "---",
-  ].join("\n");
+// Open URL in the default browser
+function openBrowser(url: string) {
+  const platform = process.platform;
+  let command: string;
+  
+  if (platform === 'darwin') {
+    command = `open "${url}"`;
+  } else if (platform === 'win32') {
+    command = `start "" "${url}"`;
+  } else {
+    command = `xdg-open "${url}"`;
+  }
+  
+  exec(command, (error) => {
+    if (error) {
+      console.error('Failed to open browser:', error);
+    } else {
+      console.error(`Browser opened to ${url}`);
+    }
+  });
 }
 
-interface ForecastPeriod {
-  name?: string;
-  temperature?: number;
-  temperatureUnit?: string;
-  windSpeed?: string;
-  windDirection?: string;
-  shortForecast?: string;
-}
+// Create HTTP server to display Pokemon data
+const httpServer = createServer((req, res) => {
+  res.setHeader("Content-Type", "text/plain; charset=utf-8");
+  res.setHeader("Access-Control-Allow-Origin", "*");
+  
+  if (!currentPokemon) {
+    res.statusCode = 200;
+    res.end("No Pokemon data available. Use the MCP tool to fetch a Pokemon first!");
+    return;
+  }
+  
+  const typeText = formatTypes(currentPokemon.types);
+  const response = `Pokemon: ${currentPokemon.name} (#${currentPokemon.id})\nType(s): ${typeText}`;
+  
+  res.statusCode = 200;
+  res.end(response);
+});
 
-interface AlertsResponse {
-  features: AlertFeature[];
-}
+// Start the HTTP server on a random available port
+httpServer.listen(0, '127.0.0.1', () => {
+  const address = httpServer.address();
+  if (address && typeof address !== 'string') {
+    actualPort = address.port;
+    console.error(`Local server running at http://localhost:${actualPort}`);
+  }
+});
 
-interface PointsResponse {
-  properties: {
-    forecast?: string;
-  };
-}
+httpServer.on('error', (err: any) => {
+  console.error('HTTP server error:', err);
+});
 
-interface ForecastResponse {
-  properties: {
-    periods: ForecastPeriod[];
-  };
-}
-
-// Create server instance
+// Create MCP server instance
 const server = new McpServer({
-  name: "weather",
+  name: "pokemon-mcp",
   version: "1.0.0",
 });
 
-// Register weather tools
+// Register Pokemon fetch tool
 server.tool(
-  "get-alerts",
-  "Get weather alerts for a state",
+  "fetch-pokemon",
+  "Fetch a Pokemon by number or name and display its type on localhost",
   {
-    state: z.string().length(2).describe("Two-letter state code (e.g. CA, NY)"),
+    pokemon: z.union([
+      z.string().describe("Pokemon name (e.g., 'pikachu', 'charizard')"),
+      z.number().int().positive().describe("Pokemon number (e.g., 25 for Pikachu)")
+    ]).describe("The Pokemon to fetch by name or number"),
   },
-  async ({ state }) => {
-    const stateCode = state.toUpperCase();
-    const alertsUrl = `${NWS_API_BASE}/alerts?area=${stateCode}`;
-    const alertsData = await makeNWSRequest<AlertsResponse>(alertsUrl);
-
-    if (!alertsData) {
+  async ({ pokemon }) => {
+    const pokemonData = await fetchPokemon(pokemon);
+    
+    if (!pokemonData) {
       return {
         content: [
           {
             type: "text",
-            text: "Failed to retrieve alerts data",
+            text: `Failed to fetch Pokemon: ${pokemon}. Please check if the Pokemon name or number is valid.`,
           },
         ],
       };
     }
-
-    const features = alertsData.features || [];
-    if (features.length === 0) {
-      return {
-        content: [
-          {
-            type: "text",
-            text: `No active alerts for ${stateCode}`,
-          },
-        ],
-      };
+    
+    // Update the current Pokemon for the HTTP server
+    currentPokemon = pokemonData;
+    
+    // Open browser to display the Pokemon
+    if (actualPort) {
+      const url = `http://localhost:${actualPort}`;
+      openBrowser(url);
     }
-
-    const formattedAlerts = features.map(formatAlert);
-    const alertsText = `Active alerts for ${stateCode}:\n\n${formattedAlerts.join("\n")}`;
-
+    
+    const types = formatTypes(pokemonData.types);
+    const responseText = [
+      `Successfully fetched Pokemon #${pokemonData.id}: ${pokemonData.name}`,
+      `Type(s): ${types}`,
+      `Height: ${pokemonData.height / 10}m`,
+      `Weight: ${pokemonData.weight / 10}kg`,
+      "",
+      actualPort ? `Browser opening to http://localhost:${actualPort}` : "HTTP server starting...",
+    ].join("\n");
+    
     return {
       content: [
         {
           type: "text",
-          text: alertsText,
+          text: responseText,
         },
       ],
     };
   },
 );
 
+// Register a tool to get the current Pokemon
 server.tool(
-  "get-forecast",
-  "Get weather forecast for a location",
-  {
-    latitude: z.number().min(-90).max(90).describe("Latitude of the location"),
-    longitude: z
-      .number()
-      .min(-180)
-      .max(180)
-      .describe("Longitude of the location"),
-  },
-  async ({ latitude, longitude }) => {
-    // Get grid point data
-    const pointsUrl = `${NWS_API_BASE}/points/${latitude.toFixed(4)},${longitude.toFixed(4)}`;
-    const pointsData = await makeNWSRequest<PointsResponse>(pointsUrl);
-
-    if (!pointsData) {
+  "get-current-pokemon",
+  "Get the currently displayed Pokemon information",
+  {},
+  async () => {
+    if (!currentPokemon) {
       return {
         content: [
           {
             type: "text",
-            text: `Failed to retrieve grid point data for coordinates: ${latitude}, ${longitude}. This location may not be supported by the NWS API (only US locations are supported).`,
+            text: "No Pokemon is currently loaded. Use fetch-pokemon to load a Pokemon first.",
           },
         ],
       };
     }
-
-    const forecastUrl = pointsData.properties?.forecast;
-    if (!forecastUrl) {
-      return {
-        content: [
-          {
-            type: "text",
-            text: "Failed to get forecast URL from grid point data",
-          },
-        ],
-      };
-    }
-
-    // Get forecast data
-    const forecastData = await makeNWSRequest<ForecastResponse>(forecastUrl);
-    if (!forecastData) {
-      return {
-        content: [
-          {
-            type: "text",
-            text: "Failed to retrieve forecast data",
-          },
-        ],
-      };
-    }
-
-    const periods = forecastData.properties?.periods || [];
-    if (periods.length === 0) {
-      return {
-        content: [
-          {
-            type: "text",
-            text: "No forecast periods available",
-          },
-        ],
-      };
-    }
-
-    // Format forecast periods
-    const formattedForecast = periods.map((period: ForecastPeriod) =>
-      [
-        `${period.name || "Unknown"}:`,
-        `Temperature: ${period.temperature || "Unknown"}°${period.temperatureUnit || "F"}`,
-        `Wind: ${period.windSpeed || "Unknown"} ${period.windDirection || ""}`,
-        `${period.shortForecast || "No forecast available"}`,
-        "---",
-      ].join("\n"),
-    );
-
-    const forecastText = `Forecast for ${latitude}, ${longitude}:\n\n${formattedForecast.join("\n")}`;
-
+    
+    const types = formatTypes(currentPokemon.types);
+    const responseText = [
+      `Current Pokemon: #${currentPokemon.id} ${currentPokemon.name}`,
+      `Type(s): ${types}`,
+      `Height: ${currentPokemon.height / 10}m`,
+      `Weight: ${currentPokemon.weight / 10}kg`,
+      actualPort ? `View at: http://localhost:${actualPort}` : "HTTP server starting...",
+    ].join("\n");
+    
     return {
       content: [
         {
           type: "text",
-          text: forecastText,
+          text: responseText,
         },
       ],
     };
   },
 );
 
-// Start the server
+// Start the MCP server
 async function main() {
   const transport = new StdioServerTransport();
   await server.connect(transport);
-  console.error("Weather MCP Server running on stdio");
+  console.error("Pokemon MCP Server running on stdio");
+  
+  // Handle graceful shutdown
+  const shutdown = () => {
+    console.error('Shutting down...');
+    httpServer.close(() => {
+      process.exit(0);
+    });
+  };
+  
+  process.on('SIGINT', shutdown);
+  process.on('SIGTERM', shutdown);
+  process.on('exit', () => {
+    httpServer.close();
+  });
 }
 
 main().catch((error) => {
