@@ -1,28 +1,54 @@
 {
   "name": "pokemon-mcp-server",
   "version": "1.0.0",
-  "main": "index.js",
+  "description": "MCP server that fetches Pokemon data and displays it in a React web interface",
+  "main": "./build/index.js",
   "type": "module",
   "bin": {
-    "pokemon-mcp": "./build/index.js"
+    "pokemon-mcp-server": "./build/cli.js",
+    "pokemon-mcp": "./build/cli.js"
   },
   "scripts": {
-    "build": "tsc && node -e \"require('fs').chmodSync('build/index.js', '755')\""
+    "build": "tsc",
+    "postbuild": "chmod +x build/cli.js",
+    "prepublishOnly": "npm run build",
+    "start": "node build/index.js"
   },
   "files": [
-    "build"
+    "build",
+    "README.md",
+    "LICENSE"
   ],
-  "keywords": [],
-  "author": "",
-  "license": "ISC",
-  "description": "MCP server that fetches Pokemon data and displays types on localhost",
+  "keywords": [
+    "mcp",
+    "model-context-protocol",
+    "pokemon",
+    "pokeapi",
+    "ai",
+    "claude",
+    "react",
+    "typescript"
+  ],
+  "author": "Nick Powell",
+  "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/njayp/poke-mcp"
+  },
+  "bugs": {
+    "url": "https://github.com/nickpowell/pokemon-mcp-server/issues"
+  },
+  "homepage": "https://github.com/nickpowell/pokemon-mcp-server#readme",
+  "engines": {
+    "node": ">=16.0.0"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.4.0"
+  },
   "devDependencies": {
     "@types/node": "^22.10.0",
     "@types/react": "^18.0.0",
     "@types/react-dom": "^18.0.0",
     "typescript": "^5.7.2"
-  },
-  "dependencies": {
-    "@modelcontextprotocol/sdk": "^1.4.0"
   }
 }
